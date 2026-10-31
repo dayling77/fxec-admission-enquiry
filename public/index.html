@@ -38,16 +38,10 @@
 </div>
 <div class="section"><h3 class="section-title"><span class="num">05</span> Contact Information</h3><div class="grid">
 <div class="field"><label class="fieldlabel" for="contactNumber">Mobile Number <span class="req">*</span></label><input id="contactNumber" type="tel" inputmode="tel" maxlength="15" required placeholder="Enter contact number"></div>
-<div class="field"><label class="fieldlabel" for="email">Email Address <span class="req">*</span></label><input id="email" type="email" autocomplete="email" required placeholder="name@example.com"><span id="emailVerifiedBadge" class="verified-badge" hidden>✓ Email verified</span></div>
-</div></div>
-<div class="section"><h3 class="section-title"><span class="num">06</span> Email Verification</h3><div class="otpbox">
-<p class="hint" style="margin:0 0 14px">A six-digit verification code will be sent to your email address. The code is valid for five minutes.</p>
-<div class="otp-actions"><div class="field"><label class="fieldlabel" for="otpEmail">Email for OTP</label><input id="otpEmail" type="email" readonly placeholder="Enter email above"></div><button class="btn secondary" type="button" id="sendOtpBtn">Send Email OTP</button></div>
-<div class="verifyrow"><div class="field"><label class="fieldlabel" for="otp">6-digit verification code</label><input id="otp" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="Enter OTP"></div><button class="btn secondary" type="button" id="verifyOtpBtn" disabled>Verify OTP</button></div>
-<div id="status" class="status" role="status" aria-live="polite"></div>
+<div class="field"><label class="fieldlabel" for="email">Email Address <span class="req">*</span></label><input id="email" type="email" autocomplete="email" required placeholder="name@example.com"></div>
 </div></div>
 <label class="consent"><input id="consent" type="checkbox" required><span>I agree that Francis Xavier Engineering College may contact me regarding admissions and related opportunities. I confirm that the information provided is accurate.</span></label>
-<button class="btn primary submit" type="submit" id="submitBtn" disabled>Verify email to enable submission</button>
+<button class="btn primary submit" type="submit" id="submitBtn">Submit Admission Enquiry</button>
 </form>
 <div class="successview" id="successView"><div class="tick">✓</div><h2>Enquiry submitted successfully!</h2><p>Thank you for your interest in Francis Xavier Engineering College. Our Admissions Team will contact you soon.</p></div>
 </section></main>
@@ -55,32 +49,33 @@
 <script>
 (function(){
 "use strict";
-const API={send:"https://asia-south1-fxec-admission-enquiry.cloudfunctions.net/sendAdmissionOTP",verify:"https://asia-south1-fxec-admission-enquiry.cloudfunctions.net/verifyAdmissionOTP",submit:"https://asia-south1-fxec-admission-enquiry.cloudfunctions.net/submitAdmissionEnquiry"};
+const API="https://asia-south1-fxec-admission-enquiry.cloudfunctions.net/submitAdmissionEnquiry";
 const $=id=>document.getElementById(id), form=$("enquiryForm"), status=$("status");
-let verificationId="",verificationToken="",verifiedEmail="";
 function show(message,type){status.textContent=message;status.className="status show "+type}
 function busy(button,on,label){button.disabled=on;button.dataset.label??=button.textContent;button.innerHTML=on?'<span class="spinner"></span>Please wait…':label||button.dataset.label}
-async function post(url,data){let response;try{response=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(data)})}catch(e){throw new Error("Unable to connect to the admission server. Please check your internet connection and try again.")}let result={};try{result=await response.json()}catch(e){}if(!response.ok||!result.success)throw new Error(result.message||"Request failed. Please try again.");return result}
-function email(){return $("email").value.trim().toLowerCase()}
-function formData(){return {studentName:$("studentName").value.trim(),district:$("district").value,schoolBoard:$("schoolBoard").value,schoolName:$("schoolName").value.trim(),xStandardMarks:$("xStandardMarks").value,xiiExpectedMarks:$("xiiExpectedMarks").value,xiiMaximumMarks:$("xiiMaximumMarks").value,meritScholarshipInterest:document.querySelector('input[name="meritScholarshipInterest"]:checked')?.value==="Yes",joiningInterest:document.querySelector('input[name="joiningInterest"]:checked')?.value,preference1:$("preference1").value,preference2:$("preference2").value,preference3:$("preference3").value,contactNumber:$("contactNumber").value.trim(),email:email()} }
-$("email").addEventListener("input",()=>{ $("otpEmail").value=email(); if(verifiedEmail&&email()!==verifiedEmail){verificationToken="";verifiedEmail="";$("emailVerifiedBadge").hidden=true;$("submitBtn").disabled=true;$("submitBtn").textContent="Verify email to enable submission";show("Email changed. Please request and verify a new code.","info")}});
-$("sendOtpBtn").addEventListener("click",async()=>{if(!$("studentName").value.trim()||!email()){show("Enter the student name and a valid email address first.","error");return}if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email())){show("Enter a valid email address.","error");return}const b=$("sendOtpBtn");busy(b,true);try{const r=await post(API.send,{name:$("studentName").value.trim(),email:email()});verificationId=r.verificationId;verificationToken="";verifiedEmail="";$("verifyOtpBtn").disabled=false;$("otp").focus();show("Verification code sent. Please check your inbox and spam folder. It expires in five minutes.","success")}catch(e){show(e.message,"error")}finally{busy(b,false,"Send Email OTP")}});
-$("verifyOtpBtn").addEventListener("click",async()=>{const code=$("otp").value.trim();if(!verificationId){show("Please request an OTP first.","error");return}if(!/^\d{6}$/.test(code)){show("Enter the six-digit verification code.","error");return}const b=$("verifyOtpBtn");busy(b,true);try{const r=await post(API.verify,{verificationId,email:email(),otp:code});verificationToken=r.verificationToken;verifiedEmail=email();$("emailVerifiedBadge").hidden=false;$("submitBtn").disabled=false;$("submitBtn").textContent="Submit Admission Enquiry";show("Email verified successfully. You can now submit your enquiry.","success")}catch(e){show(e.message,"error")}finally{busy(b,false,"Verify OTP")}});
-form.addEventListener("submit",async e=>{e.preventDefault();if(!form.reportValidity())return;if(!verificationToken||verifiedEmail!==email()){show("Please verify your email address before submitting.","error");return}const d=formData();if(Number(d.xiiExpectedMarks)>Number(d.xiiMaximumMarks)){show("Expected XII marks cannot exceed the maximum marks.","error");return}if(!/^[+\d\s()-]{8,18}$/.test(d.contactNumber)){show("Enter a valid contact number.","error");return}if(!$("consent").checked){show("Please confirm the consent statement.","error");return}const b=$("submitBtn");busy(b,true);try{await post(API.submit,{verificationToken,enquiry:d});form.style.display="none";$("successView").classList.add("show");window.scrollTo({top:0,behavior:"smooth"})}catch(err){show(err.message,"error")}finally{busy(b,false,"Submit Admission Enquiry")}});
-const preferenceIds=["preference1","preference2","preference3"];
-function refreshPreferenceOptions(){
-  const chosen=preferenceIds.map(id=>$(id).value).filter(Boolean);
-  preferenceIds.forEach(id=>{
-    const current=$(id).value;
-    [...$(id).options].forEach(option=>{
-      if(!option.value)return;
-      option.disabled=chosen.includes(option.value)&&option.value!==current;
-    });
-  });
+async function post(url,data){
+ let response;
+ try{response=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(data)})}
+ catch(e){throw new Error("Unable to connect to the admission server. Please check your internet connection and try again.")}
+ let result={};try{result=await response.json()}catch(e){}
+ if(!response.ok||!result.success)throw new Error(result.message||"Request failed. Please try again.");
+ return result;
 }
-preferenceIds.forEach(id=>$(id).addEventListener("change",refreshPreferenceOptions));
-refreshPreferenceOptions();
-$("otpEmail").value=email();
+function formData(){return {studentName:$("studentName").value.trim(),district:$("district").value,schoolBoard:$("schoolBoard").value,schoolName:$("schoolName").value.trim(),xStandardMarks:$("xStandardMarks").value,xiiExpectedMarks:$("xiiExpectedMarks").value,xiiMaximumMarks:$("xiiMaximumMarks").value,meritScholarshipInterest:document.querySelector('input[name="meritScholarshipInterest"]:checked')?.value==="Yes",joiningInterest:document.querySelector('input[name="joiningInterest"]:checked')?.value,preference1:$("preference1").value,preference2:$("preference2").value,preference3:$("preference3").value,contactNumber:$("contactNumber").value.trim(),email:$("email").value.trim().toLowerCase()}}
+form.addEventListener("submit",async e=>{
+ e.preventDefault();if(!form.reportValidity())return;
+ const d=formData();
+ if(Number(d.xiiExpectedMarks)>Number(d.xiiMaximumMarks)){show("Expected XII marks cannot exceed the maximum marks.","error");return}
+ if(!/^[+\d\s()-]{8,18}$/.test(d.contactNumber)){show("Enter a valid contact number.","error");return}
+ if(!$("consent").checked){show("Please confirm the consent statement.","error");return}
+ const button=$("submitBtn");busy(button,true);
+ try{await post(API,{enquiry:d});form.style.display="none";$("successView").classList.add("show");window.scrollTo({top:0,behavior:"smooth"})}
+ catch(error){show(error.message,"error")}
+ finally{busy(button,false,"Submit Admission Enquiry")}
+});
+const ids=["preference1","preference2","preference3"];
+function refresh(){const chosen=ids.map(id=>$(id).value).filter(Boolean);ids.forEach(id=>{const current=$(id).value;[...$(id).options].forEach(option=>{if(option.value)option.disabled=chosen.includes(option.value)&&option.value!==current})})}
+ids.forEach(id=>$(id).addEventListener("change",refresh));refresh();
 })();
 </script>
 </body></html>
