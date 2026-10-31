@@ -1,6 +1,5 @@
 const { setGlobalOptions } = require("firebase-functions/v2");
 const { onRequest } = require("firebase-functions/v2/https");
-const { defineSecret } = require("firebase-functions/params");
 const { initializeApp } = require("firebase-admin/app");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const { google } = require("googleapis");
@@ -9,13 +8,6 @@ const crypto = require("crypto");
 initializeApp();
 
 const db = getFirestore();
-
-const ZEPTOMAIL_SEND_TOKEN = defineSecret("ZEPTOMAIL_SEND_TOKEN");
-const OTP_HASH_SECRET = defineSecret("OTP_HASH_SECRET");
-
-const EMAIL_API_URL = "https://cpaas.zoho.in/v1.1/email";
-const SENDER_EMAIL = "admissions@fxecdigital.org";
-const SENDER_NAME = "FXEC Admissions";
 
 const SPREADSHEET_ID =
   "12hy8EV7EaBGJHl2IdL-fc-SFemBCOEoo6MTNNei2how";
@@ -96,19 +88,6 @@ function respond(res, status, data) {
   return res.status(status).json(data);
 }
 
-function emailHash(email) {
-  return crypto.createHash("sha256")
-    .update(email.toLowerCase())
-    .digest("hex");
-}
-
-function secureHash(value) {
-  return crypto.createHmac(
-    "sha256",
-    OTP_HASH_SECRET.value()
-  ).update(value).digest("hex");
-}
-
 function validEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
@@ -141,268 +120,6 @@ function checkRequest(req, res) {
 
   return true;
 }
-
-// --------------------------------------------------
-// 1. SEND EMAIL OTP
-// --------------------------------------------------
-
-exports.sendAdmissionOTP = onRequest(
-  {
-    invoker: "public",
-    cors: ALLOWED_ORIGINS,
-    secrets: [ZEPTOMAIL_SEND_TOKEN, OTP_HASH_SECRET]
-  },
-  async (req, res) => {
-    if (!checkRequest(req, res)) return;
-
-    try {
-      const email = String(req.body?.email || "").trim().toLowerCase();
-      const name = String(req.body?.name || "").trim();
-
-      if (!validEmail(email) || !name || name.length > 100) {
-        return respond(res, 400, {
-          success: false,
-          message: "Enter a valid name and email address."
-        });
-      }
-
-      const now = Date.now();
-      const lockRef = db.collection("admissionEmailLimits")
-        .doc(emailHash(email));
-
-      await db.runTransaction(async transaction => {
-        const snap = await transaction.get(lockRef);
-        const data = snap.exists ? snap.data() : {};
-
-        const windowStart = data.windowStart || now;
-        const count = now - windowStart > 15 * 60 * 1000
-          ? 0
-          : (data.sendCount || 0);
-
-        if (data.lastSentAt && now - data.lastSentAt < 60000) {
-          throw new Error("OTP_COOLDOWN");
-        }
-
-        if (count >= 3) {
-          throw new Error("OTP_LIMIT");
-        }
-
-        transaction.set(lockRef, {
-          windowStart: count === 0 ? now : windowStart,
-          sendCount: count + 1,
-          lastSentAt: now
-        });
-      });
-
-      const otp = String(crypto.randomInt(100000, 1000000));
-      const verificationId = crypto.randomUUID();
-
-      await db.collection("admissionOTP").doc(verificationId).set({
-        email,
-        name,
-        otpHash: secureHash(otp),
-        status: "pending",
-        attempts: 0,
-        expiresAt: now + 5 * 60 * 1000,
-        createdAt: FieldValue.serverTimestamp()
-      });
-
-      const safeName = escapeHtml(name);
-
-      const emailPayload = {
-        from: {
-          address: SENDER_EMAIL,
-          name: SENDER_NAME
-        },
-        to: [{
-          email_address: {
-            address: email,
-            name
-          }
-        }],
-        subject: "Your FXEC Admission Enquiry Verification Code",
-        htmlbody: `
-          <div style="font-family:Arial,sans-serif;max-width:520px;
-                      margin:auto;border:1px solid #ddd;border-radius:10px;
-                      overflow:hidden;">
-            <div style="background:#123b70;color:white;padding:22px;">
-              <h2 style="margin:0;">FXEC Admissions</h2>
-              <p style="margin:6px 0 0;">Email Verification</p>
-            </div>
-            <div style="padding:25px;color:#222;">
-              <p>Dear ${safeName},</p>
-              <p>Your verification code is:</p>
-              <div style="font-size:32px;font-weight:bold;letter-spacing:8px;
-                          color:#123b70;padding:15px 0;">
-                ${otp}
-              </div>
-              <p>This code expires in <b>5 minutes</b>.</p>
-              <p>If you did not request this code, please ignore this email.</p>
-              <p>Regards,<br><b>FXEC Admissions Team</b></p>
-            </div>
-          </div>
-        `,
-        textbody:
-          `Dear ${name}, your FXEC verification code is ${otp}. ` +
-          "It expires in 5 minutes."
-      };
-
-      const mailResponse = await fetch(EMAIL_API_URL, {
-        method: "POST",
-        headers: {
-          "Authorization": `Zoho-enczapikey ${ZEPTOMAIL_SEND_TOKEN.value()}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(emailPayload)
-      });
-
-      if (!mailResponse.ok) {
-        await db.collection("admissionOTP")
-          .doc(verificationId).delete();
-
-        loggerError("Email provider rejected request", mailResponse.status);
-
-        return respond(res, 502, {
-          success: false,
-          message: "Unable to send verification email. Please try again later."
-        });
-      }
-
-      return respond(res, 200, {
-        success: true,
-        verificationId,
-        message: "Verification code sent successfully."
-      });
-
-    } catch (error) {
-      if (error.message === "OTP_COOLDOWN") {
-        return respond(res, 429, {
-          success: false,
-          message: "Please wait 60 seconds before requesting another code."
-        });
-      }
-
-      if (error.message === "OTP_LIMIT") {
-        return respond(res, 429, {
-          success: false,
-          message: "OTP request limit reached. Try again after 15 minutes."
-        });
-      }
-
-      loggerError("Send OTP failed", error.message);
-
-      return respond(res, 500, {
-        success: false,
-        message: "Unable to process your request."
-      });
-    }
-  }
-);
-
-// --------------------------------------------------
-// 2. VERIFY EMAIL OTP
-// --------------------------------------------------
-
-exports.verifyAdmissionOTP = onRequest(
-  {
-    invoker: "public",
-    cors: ALLOWED_ORIGINS,
-    secrets: [OTP_HASH_SECRET]
-  },
-  async (req, res) => {
-    if (!checkRequest(req, res)) return;
-
-    try {
-      const verificationId = String(req.body?.verificationId || "");
-      const email = String(req.body?.email || "").trim().toLowerCase();
-      const otp = String(req.body?.otp || "");
-
-      if (!verificationId || !validEmail(email) ||
-          !/^\d{6}$/.test(otp)) {
-        return respond(res, 400, {
-          success: false,
-          message: "Invalid verification details."
-        });
-      }
-
-      const ref = db.collection("admissionOTP").doc(verificationId);
-      const verificationToken = crypto.randomBytes(32).toString("hex");
-      const tokenHash = secureHash(verificationToken);
-
-      const result = await db.runTransaction(async transaction => {
-        const snap = await transaction.get(ref);
-
-        if (!snap.exists) return "INVALID";
-
-        const data = snap.data();
-
-        if (data.email !== email || data.status !== "pending") {
-          return "INVALID";
-        }
-
-        if (Date.now() > data.expiresAt) {
-          transaction.update(ref, { status: "expired" });
-          return "EXPIRED";
-        }
-
-        if (data.attempts >= 5) return "LOCKED";
-
-        const suppliedHash = Buffer.from(secureHash(otp), "hex");
-        const storedHash = Buffer.from(data.otpHash, "hex");
-
-        const correct =
-          suppliedHash.length === storedHash.length &&
-          crypto.timingSafeEqual(suppliedHash, storedHash);
-
-        if (!correct) {
-          const attempts = data.attempts + 1;
-
-          transaction.update(ref, {
-            attempts,
-            ...(attempts >= 5 ? { status: "locked" } : {})
-          });
-
-          return "WRONG";
-        }
-
-        transaction.update(ref, {
-          status: "verified",
-          tokenHash,
-          tokenExpiresAt: Date.now() + 10 * 60 * 1000,
-          verifiedAt: FieldValue.serverTimestamp()
-        });
-
-        return "VERIFIED";
-      });
-
-      if (result !== "VERIFIED") {
-        return respond(res, 400, {
-          success: false,
-          message: {
-            INVALID: "Invalid verification request.",
-            EXPIRED: "The code has expired. Request a new one.",
-            LOCKED: "Too many attempts. Request a new code.",
-            WRONG: "Incorrect code. Please try again."
-          }[result]
-        });
-      }
-
-      return respond(res, 200, {
-        success: true,
-        verificationToken,
-        message: "Email verified successfully."
-      });
-
-    } catch (error) {
-      loggerError("OTP verification failed", error.message);
-
-      return respond(res, 500, {
-        success: false,
-        message: "Unable to verify the code."
-      });
-    }
-  }
-);
 
 // --------------------------------------------------
 // GOOGLE SHEETS HELPERS
@@ -466,7 +183,7 @@ async function enquiryAlreadyExists(sheets, enquiryId) {
 }
 
 function normalizePhone(value) {
-  return String(value || "").replace(/\\D/g, "");
+  return String(value || "").replace(/\D/g, "");
 }
 
 function duplicateKey(type, value) {
@@ -588,180 +305,61 @@ function validateEnquiry(data) {
 }
 
 // --------------------------------------------------
-// 3. SUBMIT VERIFIED ADMISSION ENQUIRY
+// SUBMIT ADMISSION ENQUIRY WITHOUT EMAIL OTP
 // --------------------------------------------------
-
 exports.submitAdmissionEnquiry = onRequest(
-  {
-    invoker: "public",
-    cors: ALLOWED_ORIGINS,
-    secrets: [OTP_HASH_SECRET]
-  },
+  { invoker: "public", cors: ALLOWED_ORIGINS },
   async (req, res) => {
     if (!checkRequest(req, res)) return;
-
-    let ref;
     let reservationRefs = [];
-    let reservationTokenHash = "";
-
+    let enquiryId = "";
     try {
-      const token = String(req.body?.verificationToken || "");
       const submittedData = req.body?.enquiry;
-
-      if (!/^[a-f0-9]{64}$/.test(token) || !submittedData) {
-        return respond(res, 400, {
-          success: false,
-          message: "Verification is required before submission."
-        });
-      }
-
+      if (!submittedData) return respond(res, 400, {success:false,message:"Please complete the admission enquiry form."});
       const enquiry = validateEnquiry(submittedData);
-      const tokenHash = secureHash(token);
-      reservationTokenHash = tokenHash;
-
-      const query = await db.collection("admissionOTP")
-        .where("tokenHash", "==", tokenHash)
-        .limit(1)
-        .get();
-
-      if (query.empty) {
-        return respond(res, 403, {
-          success: false,
-          message: "Verification expired. Please verify your email again."
-        });
-      }
-
-      ref = query.docs[0].ref;
-
       const sheets = await getSheetsClient();
       await ensureAdmissionSheet(sheets);
+      if (await findExistingEnquiry(sheets,enquiry.email,enquiry.contactNumber))
+        return respond(res,409,{success:false,message:"You have already submitted your admission enquiry."});
 
-      if (await findExistingEnquiry(sheets, enquiry.email, enquiry.contactNumber)) {
-        return respond(res, 409, {
-          success: false,
-          message: "You have already submitted your admission enquiry."
-        });
-      }
+      enquiryId = crypto.randomUUID();
+      const emailRef=db.collection("admissionEnquiryLocks").doc(duplicateKey("email",enquiry.email));
+      const phoneRef=db.collection("admissionEnquiryLocks").doc(duplicateKey("phone",normalizePhone(enquiry.contactNumber)));
+      reservationRefs=[emailRef,phoneRef];
 
-      const emailRef = db.collection("admissionEnquiryLocks")
-        .doc(duplicateKey("email", enquiry.email));
-      const phoneRef = db.collection("admissionEnquiryLocks")
-        .doc(duplicateKey("phone", normalizePhone(enquiry.contactNumber)));
-      reservationRefs = [emailRef, phoneRef];
-
-      const claim = await db.runTransaction(async transaction => {
-        const otpSnap = await transaction.get(ref);
-        const emailSnap = await transaction.get(emailRef);
-        const phoneSnap = await transaction.get(phoneRef);
-
-        if (!otpSnap.exists) return "INVALID";
-        const otpData = otpSnap.data();
-
-        if (otpData.status === "submitted") return "SUBMITTED";
-        if (otpData.status !== "verified" ||
-            otpData.tokenExpiresAt < Date.now() ||
-            otpData.email !== enquiry.email) return "INVALID";
-
-        if (emailSnap.exists || phoneSnap.exists) return "DUPLICATE";
-
-        transaction.update(ref, { status: "submitting" });
-        const lockData = {
-          status: "submitting",
-          tokenHash,
-          createdAt: FieldValue.serverTimestamp()
-        };
-        transaction.create(emailRef, lockData);
-        transaction.create(phoneRef, lockData);
+      const claim=await db.runTransaction(async transaction=>{
+        const emailSnap=await transaction.get(emailRef);
+        const phoneSnap=await transaction.get(phoneRef);
+        if(emailSnap.exists||phoneSnap.exists)return "DUPLICATE";
+        const lock={status:"submitting",enquiryId,createdAt:FieldValue.serverTimestamp()};
+        transaction.create(emailRef,lock);transaction.create(phoneRef,lock);
         return "CLAIMED";
       });
+      if(claim!=="CLAIMED")return respond(res,409,{success:false,message:"You have already submitted your admission enquiry."});
 
-      if (claim === "SUBMITTED" || claim === "DUPLICATE") {
-        return respond(res, 409, {
-          success: false,
-          message: "You have already submitted your admission enquiry."
-        });
-      }
-
-      if (claim !== "CLAIMED") {
-        return respond(res, 403, {
-          success: false,
-          message: "Verification expired or does not match this email."
-        });
-      }
-
-      const enquiryId = ref.id;
       await sheets.spreadsheets.values.append({
-        spreadsheetId: SPREADSHEET_ID,
-        range: `'${SHEET_NAME}'!A:T`,
-        valueInputOption: "USER_ENTERED",
-        insertDataOption: "INSERT_ROWS",
-        requestBody: {
-          values: [[
-            enquiryId,
-            new Date().toISOString(),
-            enquiry.studentName,
-            "XII",
-            "",
-            enquiry.district,
-            enquiry.schoolBoard,
-            enquiry.schoolName,
-            Number(enquiry.xStandardMarks),
-            "",
-            Number(enquiry.xiiExpectedMarks),
-            Number(enquiry.xiiMaximumMarks),
-            enquiry.meritScholarshipInterest ? "Yes" : "No",
-            enquiry.contactNumber,
-            enquiry.email,
-            "Email",
-            enquiry.joiningInterest,
-            enquiry.preference1,
-            enquiry.preference2 || "",
-            enquiry.preference3 || ""
-          ]]
-        }
+        spreadsheetId:SPREADSHEET_ID,range:`'${SHEET_NAME}'!A:T`,
+        valueInputOption:"USER_ENTERED",insertDataOption:"INSERT_ROWS",
+        requestBody:{values:[[
+          enquiryId,new Date().toISOString(),enquiry.studentName,"XII","",
+          enquiry.district,enquiry.schoolBoard,enquiry.schoolName,
+          Number(enquiry.xStandardMarks),"",Number(enquiry.xiiExpectedMarks),
+          Number(enquiry.xiiMaximumMarks),enquiry.meritScholarshipInterest?"Yes":"No",
+          enquiry.contactNumber,enquiry.email,"",enquiry.joiningInterest,
+          enquiry.preference1,enquiry.preference2||"",enquiry.preference3||""
+        ]]}
       });
-
-      await db.runTransaction(async transaction => {
-        transaction.update(ref, {
-          status: "submitted",
-          submittedAt: FieldValue.serverTimestamp()
-        });
-        for (const lockRef of reservationRefs) {
-          transaction.update(lockRef, {
-            status: "submitted",
-            submittedAt: FieldValue.serverTimestamp()
-          });
-        }
+      await db.runTransaction(async transaction=>{
+        for(const lockRef of reservationRefs)transaction.update(lockRef,{status:"submitted",submittedAt:FieldValue.serverTimestamp()});
       });
-
-      return respond(res, 200, {
-        success: true,
-        message: "Your admission enquiry has been submitted successfully."
-      });
-
-    } catch (error) {
-      if (ref) await ref.update({ status: "verified" }).catch(() => {});
-
-      if (reservationRefs.length && reservationTokenHash) {
-        await db.runTransaction(async transaction => {
-          const snaps = await Promise.all(
-            reservationRefs.map(lockRef => transaction.get(lockRef))
-          );
-          snaps.forEach((snap, index) => {
-            if (snap.exists &&
-                snap.data().tokenHash === reservationTokenHash &&
-                snap.data().status === "submitting") {
-              transaction.delete(reservationRefs[index]);
-            }
-          });
-        }).catch(() => {});
-      }
-
-      loggerError("Enquiry submission failed", error.message);
-      return respond(res, 400, {
-        success: false,
-        message: "Unable to submit your enquiry. Please try again."
-      });
+      return respond(res,200,{success:true,message:"Your admission enquiry has been submitted successfully."});
+    } catch(error) {
+      if(reservationRefs.length&&enquiryId)await db.runTransaction(async transaction=>{
+        const snaps=await Promise.all(reservationRefs.map(lockRef=>transaction.get(lockRef)));
+        snaps.forEach((snap,index)=>{if(snap.exists&&snap.data().enquiryId===enquiryId&&snap.data().status==="submitting")transaction.delete(reservationRefs[index])});
+      }).catch(()=>{});
+      loggerError("Enquiry submission failed",error.message);
+      return respond(res,400,{success:false,message:"Unable to submit your enquiry. Please try again."});
     }
   }
 );
