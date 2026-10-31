@@ -46,7 +46,7 @@
 <script>
 (function(){
 "use strict";
-const API={send:"https://sendadmissionotp-y6pavxorha-el.a.run.app",verify:"https://verifyadmissionotp-y6pavxorha-el.a.run.app",submit:"https://submitadmissionenquiry-y6pavxorha-el.a.run.app"};
+const API={send:"https://asia-south1-fxec-admission-enquiry.cloudfunctions.net/sendAdmissionOTP",verify:"https://asia-south1-fxec-admission-enquiry.cloudfunctions.net/verifyAdmissionOTP",submit:"https://asia-south1-fxec-admission-enquiry.cloudfunctions.net/submitAdmissionEnquiry"};
 const $=id=>document.getElementById(id), form=$("enquiryForm"), status=$("status");
 let verificationId="",verificationToken="",verifiedEmail="";
 function show(message,type){status.textContent=message;status.className="status show "+type}
