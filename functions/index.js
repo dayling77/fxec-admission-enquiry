@@ -64,18 +64,32 @@ const HEADERS = [
 ];
 
 function cors(req, res) {
-  const origin = req.get("origin");
+  const rawOrigin = req.get("origin") || req.headers.origin || "";
+  let origin = "";
+
+  try {
+    origin = rawOrigin ? new URL(rawOrigin).origin.toLowerCase() : "";
+  } catch (_) {
+    origin = "";
+  }
+
+  const allowedOrigins = new Set(
+    ALLOWED_ORIGINS.map(value => {
+      try { return new URL(value).origin.toLowerCase(); }
+      catch (_) { return ""; }
+    })
+  );
 
   res.set("Vary", "Origin");
   res.set("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.set("Access-Control-Allow-Headers", "Content-Type");
 
-  if (origin && ALLOWED_ORIGINS.includes(origin)) {
+  if (origin && allowedOrigins.has(origin)) {
     res.set("Access-Control-Allow-Origin", origin);
     return true;
   }
 
-  return !origin;
+  return !rawOrigin;
 }
 
 function respond(res, status, data) {
