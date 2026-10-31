@@ -97,3 +97,7 @@ input[readonly] { background: #f4f8fc; color: #506a84; font-weight: 700; }
   .btn { width: 100%; }
   .required-note { font-size: 11px; }
 }
+
+.verified-badge { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; padding: 5px 10px; border-radius: 999px; background: #e8f7ef; color: #14734f; font-size: 12px; font-weight: 800; }
+.verified-badge[hidden] { display: none; }
+.preference-note { margin-top: 12px; padding: 10px 12px; background: #f5f9fe; border-left: 3px solid var(--blue); border-radius: 6px; line-height: 1.55; }
