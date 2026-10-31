@@ -450,7 +450,6 @@ async function enquiryAlreadyExists(sheets, enquiryId) {
 function validateEnquiry(data) {
   const required = [
     "studentName",
-    "modeOfStudy",
     "district",
     "schoolBoard",
     "schoolName",
@@ -505,7 +504,6 @@ function validateEnquiry(data) {
 
   const marks = [
     "xStandardMarks",
-    "xStandardMaximumMarks",
     "xiiExpectedMarks",
     "xiiMaximumMarks"
   ];
@@ -518,11 +516,8 @@ function validateEnquiry(data) {
     }
   }
 
-  if (Number(data.xStandardMarks) >
-      Number(data.xStandardMaximumMarks) ||
-      Number(data.xiiExpectedMarks) >
-      Number(data.xiiMaximumMarks)) {
-    throw new Error("Marks cannot exceed maximum marks.");
+  if (Number(data.xiiExpectedMarks) > Number(data.xiiMaximumMarks)) {
+    throw new Error("Expected XII marks cannot exceed maximum marks.");
   }
 
   const contact = String(data.contactNumber).replace(/[+\s()-]/g, "");
@@ -635,12 +630,12 @@ exports.submitAdmissionEnquiry = onRequest(
               new Date().toISOString(),
               enquiry.studentName,
               "XII",
-              enquiry.modeOfStudy,
+              "",
               enquiry.district,
               enquiry.schoolBoard,
               enquiry.schoolName,
               Number(enquiry.xStandardMarks),
-              Number(enquiry.xStandardMaximumMarks),
+              "",
               Number(enquiry.xiiExpectedMarks),
               Number(enquiry.xiiMaximumMarks),
               enquiry.meritScholarshipInterest ? "Yes" : "No",
