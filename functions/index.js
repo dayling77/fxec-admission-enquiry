@@ -128,6 +128,7 @@ function checkRequest(req, res) {
 
 exports.sendAdmissionOTP = onRequest(
   {
+    invoker: "public",
     secrets: [ZEPTOMAIL_SEND_TOKEN, OTP_HASH_SECRET]
   },
   async (req, res) => {
@@ -283,6 +284,7 @@ exports.sendAdmissionOTP = onRequest(
 
 exports.verifyAdmissionOTP = onRequest(
   {
+    invoker: "public",
     secrets: [OTP_HASH_SECRET]
   },
   async (req, res) => {
@@ -533,6 +535,7 @@ function validateEnquiry(data) {
 
 exports.submitAdmissionEnquiry = onRequest(
   {
+    invoker: "public",
     secrets: [OTP_HASH_SECRET]
   },
   async (req, res) => {
