@@ -28,6 +28,8 @@ const RUNTIME_SERVICE_ACCOUNT =
 const ALLOWED_ORIGINS = [
   "https://fxec-admission-enquiry.web.app",
   "https://fxec-admission-enquiry.firebaseapp.com",
+  "https://admissions.fxecdigital.org",
+  "http://admissions.fxecdigital.org",
   "http://localhost:5000",
   "http://127.0.0.1:5000"
 ];
