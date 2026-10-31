@@ -135,6 +135,7 @@ function checkRequest(req, res) {
 exports.sendAdmissionOTP = onRequest(
   {
     invoker: "public",
+    cors: ALLOWED_ORIGINS,
     secrets: [ZEPTOMAIL_SEND_TOKEN, OTP_HASH_SECRET]
   },
   async (req, res) => {
@@ -291,6 +292,7 @@ exports.sendAdmissionOTP = onRequest(
 exports.verifyAdmissionOTP = onRequest(
   {
     invoker: "public",
+    cors: ALLOWED_ORIGINS,
     secrets: [OTP_HASH_SECRET]
   },
   async (req, res) => {
@@ -449,6 +451,38 @@ async function enquiryAlreadyExists(sheets, enquiryId) {
   );
 }
 
+function normalizePhone(value) {
+  return String(value || "").replace(/\\D/g, "");
+}
+
+function duplicateKey(type, value) {
+  return crypto.createHash("sha256")
+    .update(type + ":" + value)
+    .digest("hex");
+}
+
+async function findExistingEnquiry(sheets, email, phone) {
+  const result = await sheets.spreadsheets.values.get({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `'${SHEET_NAME}'!N2:O`
+  });
+
+  const wantedEmail = String(email).trim().toLowerCase();
+  const wantedPhone = normalizePhone(phone);
+
+  for (const row of (result.data.values || [])) {
+    const savedPhone = normalizePhone(row[0]);
+    const savedEmail = String(row[1] || "").trim().toLowerCase();
+
+    if ((wantedEmail && savedEmail === wantedEmail) ||
+        (wantedPhone && savedPhone === wantedPhone)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function validateEnquiry(data) {
   const required = [
     "studentName",
@@ -546,12 +580,15 @@ function validateEnquiry(data) {
 exports.submitAdmissionEnquiry = onRequest(
   {
     invoker: "public",
+    cors: ALLOWED_ORIGINS,
     secrets: [OTP_HASH_SECRET]
   },
   async (req, res) => {
     if (!checkRequest(req, res)) return;
 
     let ref;
+    let reservationRefs = [];
+    let reservationTokenHash = "";
 
     try {
       const token = String(req.body?.verificationToken || "");
@@ -565,8 +602,9 @@ exports.submitAdmissionEnquiry = onRequest(
       }
 
       const enquiry = validateEnquiry(submittedData);
-
       const tokenHash = secureHash(token);
+      reservationTokenHash = tokenHash;
+
       const query = await db.collection("admissionOTP")
         .where("tokenHash", "==", tokenHash)
         .limit(1)
@@ -581,81 +619,105 @@ exports.submitAdmissionEnquiry = onRequest(
 
       ref = query.docs[0].ref;
 
-      const claim = await db.runTransaction(async transaction => {
-        const snap = await transaction.get(ref);
+      const sheets = await getSheetsClient();
+      await ensureAdmissionSheet(sheets);
 
-        if (!snap.exists) return false;
-
-        const data = snap.data();
-
-        if (data.status === "submitted") return "SUBMITTED";
-
-        if (data.status !== "verified" ||
-            data.tokenExpiresAt < Date.now() ||
-            data.email !== enquiry.email) {
-          return false;
-        }
-
-        transaction.update(ref, { status: "submitting" });
-        return true;
-      });
-
-      if (claim === "SUBMITTED") {
-        return respond(res, 200, {
-          success: true,
-          message: "This enquiry has already been submitted."
+      if (await findExistingEnquiry(sheets, enquiry.email, enquiry.contactNumber)) {
+        return respond(res, 409, {
+          success: false,
+          message: "You have already submitted your admission enquiry."
         });
       }
 
-      if (claim !== true) {
+      const emailRef = db.collection("admissionEnquiryLocks")
+        .doc(duplicateKey("email", enquiry.email));
+      const phoneRef = db.collection("admissionEnquiryLocks")
+        .doc(duplicateKey("phone", normalizePhone(enquiry.contactNumber)));
+      reservationRefs = [emailRef, phoneRef];
+
+      const claim = await db.runTransaction(async transaction => {
+        const otpSnap = await transaction.get(ref);
+        const emailSnap = await transaction.get(emailRef);
+        const phoneSnap = await transaction.get(phoneRef);
+
+        if (!otpSnap.exists) return "INVALID";
+        const otpData = otpSnap.data();
+
+        if (otpData.status === "submitted") return "SUBMITTED";
+        if (otpData.status !== "verified" ||
+            otpData.tokenExpiresAt < Date.now() ||
+            otpData.email !== enquiry.email) return "INVALID";
+
+        if (emailSnap.exists || phoneSnap.exists) return "DUPLICATE";
+
+        transaction.update(ref, { status: "submitting" });
+        const lockData = {
+          status: "submitting",
+          tokenHash,
+          createdAt: FieldValue.serverTimestamp()
+        };
+        transaction.create(emailRef, lockData);
+        transaction.create(phoneRef, lockData);
+        return "CLAIMED";
+      });
+
+      if (claim === "SUBMITTED" || claim === "DUPLICATE") {
+        return respond(res, 409, {
+          success: false,
+          message: "You have already submitted your admission enquiry."
+        });
+      }
+
+      if (claim !== "CLAIMED") {
         return respond(res, 403, {
           success: false,
           message: "Verification expired or does not match this email."
         });
       }
 
-      const sheets = await getSheetsClient();
-      await ensureAdmissionSheet(sheets);
-
       const enquiryId = ref.id;
-      const exists = await enquiryAlreadyExists(sheets, enquiryId);
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: SPREADSHEET_ID,
+        range: `'${SHEET_NAME}'!A:T`,
+        valueInputOption: "USER_ENTERED",
+        insertDataOption: "INSERT_ROWS",
+        requestBody: {
+          values: [[
+            enquiryId,
+            new Date().toISOString(),
+            enquiry.studentName,
+            "XII",
+            "",
+            enquiry.district,
+            enquiry.schoolBoard,
+            enquiry.schoolName,
+            Number(enquiry.xStandardMarks),
+            "",
+            Number(enquiry.xiiExpectedMarks),
+            Number(enquiry.xiiMaximumMarks),
+            enquiry.meritScholarshipInterest ? "Yes" : "No",
+            enquiry.contactNumber,
+            enquiry.email,
+            "Email",
+            enquiry.joiningInterest,
+            enquiry.preference1,
+            enquiry.preference2 || "",
+            enquiry.preference3 || ""
+          ]]
+        }
+      });
 
-      if (!exists) {
-        await sheets.spreadsheets.values.append({
-          spreadsheetId: SPREADSHEET_ID,
-          range: `'${SHEET_NAME}'!A:T`,
-          valueInputOption: "USER_ENTERED",
-          insertDataOption: "INSERT_ROWS",
-          requestBody: {
-            values: [[
-              enquiryId,
-              new Date().toISOString(),
-              enquiry.studentName,
-              "XII",
-              "",
-              enquiry.district,
-              enquiry.schoolBoard,
-              enquiry.schoolName,
-              Number(enquiry.xStandardMarks),
-              "",
-              Number(enquiry.xiiExpectedMarks),
-              Number(enquiry.xiiMaximumMarks),
-              enquiry.meritScholarshipInterest ? "Yes" : "No",
-              enquiry.contactNumber,
-              enquiry.email,
-              "Email",
-              enquiry.joiningInterest,
-              enquiry.preference1,
-              enquiry.preference2 || "",
-              enquiry.preference3 || ""
-            ]]
-          }
+      await db.runTransaction(async transaction => {
+        transaction.update(ref, {
+          status: "submitted",
+          submittedAt: FieldValue.serverTimestamp()
         });
-      }
-
-      await ref.update({
-        status: "submitted",
-        submittedAt: FieldValue.serverTimestamp()
+        for (const lockRef of reservationRefs) {
+          transaction.update(lockRef, {
+            status: "submitted",
+            submittedAt: FieldValue.serverTimestamp()
+          });
+        }
       });
 
       return respond(res, 200, {
@@ -664,12 +726,24 @@ exports.submitAdmissionEnquiry = onRequest(
       });
 
     } catch (error) {
-      if (ref) {
-        await ref.update({ status: "verified" }).catch(() => {});
+      if (ref) await ref.update({ status: "verified" }).catch(() => {});
+
+      if (reservationRefs.length && reservationTokenHash) {
+        await db.runTransaction(async transaction => {
+          const snaps = await Promise.all(
+            reservationRefs.map(lockRef => transaction.get(lockRef))
+          );
+          snaps.forEach((snap, index) => {
+            if (snap.exists &&
+                snap.data().tokenHash === reservationTokenHash &&
+                snap.data().status === "submitting") {
+              transaction.delete(reservationRefs[index]);
+            }
+          });
+        }).catch(() => {});
       }
 
       loggerError("Enquiry submission failed", error.message);
-
       return respond(res, 400, {
         success: false,
         message: "Unable to submit your enquiry. Please try again."
@@ -677,7 +751,6 @@ exports.submitAdmissionEnquiry = onRequest(
     }
   }
 );
-
 // Keep logs free of OTPs, tokens and student information.
 function loggerError(message, detail) {
   console.error(message, String(detail || "").slice(0, 200));
