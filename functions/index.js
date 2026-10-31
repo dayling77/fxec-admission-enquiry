@@ -13,8 +13,8 @@ const db = getFirestore();
 const ZEPTOMAIL_SEND_TOKEN = defineSecret("ZEPTOMAIL_SEND_TOKEN");
 const OTP_HASH_SECRET = defineSecret("OTP_HASH_SECRET");
 
-const EMAIL_API_URL = "https://api.zeptomail.in/v1.1/email";
-const SENDER_EMAIL = "admin@fxecdigital.org";
+const EMAIL_API_URL = "https://cpaas.zoho.in/v1.1/email";
+const SENDER_EMAIL = "admissions@fxecdigital.org";
 const SENDER_NAME = "FXEC Admissions";
 
 const SPREADSHEET_ID =
