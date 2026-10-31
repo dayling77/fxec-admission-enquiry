@@ -54,7 +54,11 @@ const HEADERS = [
   "Merit Scholarship Interest",
   "Contact Number",
   "Email Address",
-  "OTP Verification Channel"
+  "OTP Verification Channel",
+  "Interest in Joining FXEC",
+  "First Programme Preference",
+  "Second Programme Preference",
+  "Third Programme Preference"
 ];
 
 function cors(req, res) {
@@ -419,10 +423,10 @@ async function ensureAdmissionSheet(sheets) {
 
   const headerCheck = await sheets.spreadsheets.values.get({
     spreadsheetId: SPREADSHEET_ID,
-    range: `'${SHEET_NAME}'!A1:P1`
+    range: `'${SHEET_NAME}'!A1:T1`
   });
 
-  if (!headerCheck.data.values || !headerCheck.data.values.length) {
+  if (!headerCheck.data.values || !headerCheck.data.values.length || headerCheck.data.values[0].length < HEADERS.length || HEADERS.some((header, index) => headerCheck.data.values[0][index] !== header)) {
     await sheets.spreadsheets.values.update({
       spreadsheetId: SPREADSHEET_ID,
       range: `'${SHEET_NAME}'!A1`,
@@ -451,7 +455,9 @@ function validateEnquiry(data) {
     "schoolBoard",
     "schoolName",
     "contactNumber",
-    "email"
+    "email",
+    "joiningInterest",
+    "preference1"
   ];
 
   for (const key of required) {
@@ -488,6 +494,13 @@ function validateEnquiry(data) {
 
   if (!boards.includes(data.schoolBoard)) {
     throw new Error("Invalid school board.");
+  }
+
+  const programmes = ["B.E Civil", "B.E CSE", "B.E ECE", "B.E EEE", "B.E Mech", "B.Tech IT", "B.Tech AI & DS"];
+  if (!["Yes", "No"].includes(data.joiningInterest)) throw new Error("Invalid FXEC joining interest.");
+  const preferences = [data.preference1, data.preference2, data.preference3].map(value => String(value || "").trim()).filter(Boolean);
+  if (!preferences.length || preferences.some(value => !programmes.includes(value)) || new Set(preferences).size !== preferences.length) {
+    throw new Error("Select valid, non-repeating programme preferences.");
   }
 
   const marks = [
@@ -613,7 +626,7 @@ exports.submitAdmissionEnquiry = onRequest(
       if (!exists) {
         await sheets.spreadsheets.values.append({
           spreadsheetId: SPREADSHEET_ID,
-          range: `'${SHEET_NAME}'!A:P`,
+          range: `'${SHEET_NAME}'!A:T`,
           valueInputOption: "USER_ENTERED",
           insertDataOption: "INSERT_ROWS",
           requestBody: {
@@ -633,7 +646,11 @@ exports.submitAdmissionEnquiry = onRequest(
               enquiry.meritScholarshipInterest ? "Yes" : "No",
               enquiry.contactNumber,
               enquiry.email,
-              "Email"
+              "Email",
+              enquiry.joiningInterest,
+              enquiry.preference1,
+              enquiry.preference2 || "",
+              enquiry.preference3 || ""
             ]]
           }
         });
